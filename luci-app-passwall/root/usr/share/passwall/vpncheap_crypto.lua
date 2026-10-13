@@ -97,13 +97,6 @@ local function rotr(x, n)
 	return u32(math.floor(x / (2 ^ n)) + (x % (2 ^ n)) * (2 ^ (32 - n)))
 end
 
-local function rotl(x, n)
-	x = u32(x)
-	return u32((x * (2 ^ n)) % 4294967296 + math.floor(x / (2 ^ (32 - n))))
-end
-
-M.rotr, M.rotl = rotr, rotl
-
 --[[ ---------------------------- SHA-256 ---------------------------- ]]
 
 local K = {
@@ -448,91 +441,6 @@ function M.decryptIfNeeded(body, header_str)
 		return nil, err
 	end
 	return plain
-end
-
--- 仅供测试：覆盖密钥（默认是 vpncheap 的固定种子），
--- 以便用标准 AES 测试向量验证核心实现。
-function M._setKeyForTest(key)
-	if key == nil then
-		aes_key = nil
-	else
-		assert(#key == 32, "AES-256 key must be 32 bytes")
-		aes_key = key
-	end
-end
-
--- 仅供测试：解密单个块（不做 CBC 链接、不去 padding）
-function M._decryptBlockForTest(block)
-	assert(#block == 16, "block must be 16 bytes")
-	return decrypt_block(block, expand_key(get_key()))
-end
-
--- 仅供测试：返回密钥扩展结果（60 个字），用于对照标准向量
-function M._keyScheduleForTest()
-	return expand_key(get_key())
-end
-
--- 仅供测试：解密轮的各中间态，用于逐步对照
-function M._traceForTest(ct)
-	local Nr = 14
-	local w = expand_key(get_key())
-	local s = {}
-	for i = 0, 3 do
-		local b1, b2, b3, b4 = ct:byte(i * 4 + 1, i * 4 + 4)
-		s[i * 4]     = bxor(b1, band(rshift(w[Nr * 4 + i], 24), 0xff))
-		s[i * 4 + 1] = bxor(b2, band(rshift(w[Nr * 4 + i], 16), 0xff))
-		s[i * 4 + 2] = bxor(b3, band(rshift(w[Nr * 4 + i], 8), 0xff))
-		s[i * 4 + 3] = bxor(b4, band(w[Nr * 4 + i], 0xff))
-	end
-	local function pack_of(tbl)
-		local o = {}
-		for i = 0, 15 do o[i + 1] = string.char(tbl[i]) end
-		return table.concat(o)
-	end
-	local function pack() return pack_of(s) end
-	local out = { pack() }
-	for round = Nr - 1, 1, -1 do
-		for i = 0, 3 do
-			local k = w[round * 4 + i]
-			s[i * 4]     = bxor(s[i * 4],     band(rshift(k, 24), 0xff))
-			s[i * 4 + 1] = bxor(s[i * 4 + 1], band(rshift(k, 16), 0xff))
-			s[i * 4 + 2] = bxor(s[i * 4 + 2], band(rshift(k, 8), 0xff))
-			s[i * 4 + 3] = bxor(s[i * 4 + 3], band(k, 0xff))
-		end
-		out[#out + 1] = pack()
-		local m = {}
-		for c = 0, 3 do
-			local a0, a1, a2, a3 = s[c * 4], s[c * 4 + 1], s[c * 4 + 2], s[c * 4 + 3]
-			m[c * 4]     = bxor(bxor(gmul(a0, 14), gmul(a1, 11)), bxor(gmul(a2, 13), gmul(a3, 9)))
-			m[c * 4 + 1] = bxor(bxor(gmul(a0, 9), gmul(a1, 14)), bxor(gmul(a2, 11), gmul(a3, 13)))
-			m[c * 4 + 2] = bxor(bxor(gmul(a0, 13), gmul(a1, 9)), bxor(gmul(a2, 14), gmul(a3, 11)))
-			m[c * 4 + 3] = bxor(bxor(gmul(a0, 11), gmul(a1, 13)), bxor(gmul(a2, 9), gmul(a3, 14)))
-		end
-		out[#out + 1] = pack_of(m)
-		local t = {}
-		t[0],  t[4],  t[8],  t[12] = INV_SBOX[m[0]],  INV_SBOX[m[4]],  INV_SBOX[m[8]],  INV_SBOX[m[12]]
-		t[1],  t[5],  t[9],  t[13] = INV_SBOX[m[13]], INV_SBOX[m[1]],  INV_SBOX[m[5]],  INV_SBOX[m[9]]
-		t[2],  t[6],  t[10], t[14] = INV_SBOX[m[10]], INV_SBOX[m[14]], INV_SBOX[m[2]],  INV_SBOX[m[6]]
-		t[3],  t[7],  t[11], t[15] = INV_SBOX[m[7]],  INV_SBOX[m[11]], INV_SBOX[m[15]], INV_SBOX[m[3]]
-		s = t
-		out[#out + 1] = pack()
-	end
-	local t = {}
-	for c = 0, 3 do
-		for r = 0, 3 do
-			t[c * 4 + r] = INV_SBOX[s[((c - r) % 4) * 4 + r]]
-		end
-	end
-	s = t
-	for i = 0, 3 do
-		local k = w[i]
-		s[i * 4]     = bxor(s[i * 4],     band(rshift(k, 24), 0xff))
-		s[i * 4 + 1] = bxor(s[i * 4 + 1], band(rshift(k, 16), 0xff))
-		s[i * 4 + 2] = bxor(s[i * 4 + 2], band(rshift(k, 8), 0xff))
-		s[i * 4 + 3] = bxor(s[i * 4 + 3], band(k, 0xff))
-	end
-	out[#out + 1] = pack()
-	return out
 end
 
 return M
