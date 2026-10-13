@@ -277,6 +277,29 @@ o:value("Shadowrocket/9999 CFNetwork/3896.100.1.2.1 Darwin/27.0.0 iPhone19,7", "
 o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
 o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 
+o = s:option(TextValue, "custom_headers", translate("Custom HTTP Headers"))
+o.rows = 5
+o.wrap = "off"
+o.description = translate("One header per line, in the form Name: Value. Sent with the subscription request; some providers need this to return data.")
+o.cfgvalue = function(self, section)
+	return (m:get(section, "custom_headers") or ""):gsub("\\n", "\n")
+end
+o.validate = function(self, value)
+	value = api.trim(value):gsub("\r\n", "\n"):gsub("\r", "\n")
+	local headers = {}
+	for line in value:gmatch("[^\n]+") do
+		if api.trim(line) ~= "" then
+			local key = line:match("^%s*([^:]+):")
+			key = key and api.trim(key):lower()
+			if not key or not key:match("^[!#$%%&'*+%.%^_`|~%w%-]+$") or headers[key] then
+				return nil, translate("Not true format, please re-enter!") .. " (" .. line .. ")"
+			end
+			headers[key] = true
+		end
+	end
+	return value:gsub("\n", "\\n")
+end
+
 o = s:option(ListValue, "chain_proxy", translate("Chain Proxy"))
 o:value("", translate("Close(Not use)"))
 o:value("1", translate("Preproxy Node"))

@@ -12,6 +12,10 @@ local datatypes = api.datatypes
 
 loadfile("/usr/share/passwall/clash_subconverter.lua")()
 
+-- vpncheap 等机场会对订阅正文做 AES-256-CBC 加密（响应头 X-Encrypted: 1），
+-- 这里加载纯 Lua 实现的解密模块，无需依赖 openssl。
+local vpncheap = loadfile("/usr/share/passwall/vpncheap_crypto.lua")()
+
 local split = api.split
 local base64Decode = api.base64Decode
 local jsonParse, jsonStringify = api.jsonc.parse, api.jsonc.stringify
@@ -1793,7 +1797,26 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 	return result
 end
 
-local function curl(url, file, ua, mode)
+-- 订阅可自定义请求头（UCI 中以字面 \n 分隔的 "Name: Value" 行，
+-- 与节点里 masque_headers 的存储/解析约定保持一致）。
+local function buildCustomHeaderArgs(custom_headers)
+	if not custom_headers or custom_headers == "" then return nil end
+	local args = {}
+	for line in custom_headers:gsub("\\n", "\n"):gmatch("[^\r\n]+") do
+		local key, value = line:match("^%s*([^:]+):%s*(.-)%s*$")
+		if key then
+			key = api.trim(key)
+			value = api.trim(value)
+			if key ~= "" then
+				args[#args + 1] = "-H '" .. key .. ": " .. value:gsub("'", "'\\''") .. "'"
+			end
+		end
+	end
+	if #args == 0 then return nil end
+	return args
+end
+
+local function curl(url, file, ua, mode, custom_headers)
 	if not url or url == "" then return 22, 404 end
 	local curl_args = {
 		"-fskL",
@@ -1808,6 +1831,13 @@ local function curl(url, file, ua, mode)
 	ua = (ua and ua ~= "") and ua or "passwall"
 	ua = (ua == "passwall") and ("passwall/" .. api.get_version():match("^([^-]+)")) or ua
 	curl_args[#curl_args + 1] = '--user-agent "' .. ua .. '"'
+
+	local header_args = buildCustomHeaderArgs(custom_headers)
+	if header_args then
+		for _, arg in ipairs(header_args) do
+			curl_args[#curl_args + 1] = arg
+		end
+	end
 
 	local cookie_file = "/tmp/cookie_" .. api.gen_random_char(5)
 	curl_args[#curl_args + 1] = '-c "' .. cookie_file .. '" -b "' .. cookie_file .. '"'
@@ -2254,7 +2284,7 @@ local execute = function()
 			local cfgid = value[".name"]
 			local remark = value.remark or ""
 			local url = value.url or ""
-			local tmp_file, ua, headers
+			local tmp_file, ua, headers, custom_headers
 
 			local url_is_local
 			if fs.access(url) then
@@ -2264,12 +2294,13 @@ local execute = function()
 				tmp_file = url
 			else
 				ua = value.user_agent
+				custom_headers = value.custom_headers
 				local access_mode = value.access_mode
 				local result = (not access_mode) and "自动" or (access_mode == "direct" and "直连" or (access_mode == "proxy" and "代理" or "自动"))
 				log('正在订阅:【' .. remark .. '】' .. url .. ' [' .. result .. ']')
 				tmp_file = "/tmp/" .. cfgid
 				local return_code
-				return_code, value.http_code, headers = curl(url, tmp_file, ua, access_mode)
+				return_code, value.http_code, headers = curl(url, tmp_file, ua, access_mode, custom_headers)
 				if return_code ~= 0 then
 					fail_list[#fail_list + 1] = value
 					api.remove(tmp_file)
@@ -2281,15 +2312,37 @@ local execute = function()
 					local stdout = f:read("*all")
 					f:close()
 					local raw_data = api.trim(stdout)
-					local old_md5 = value.md5 or ""
-					local new_md5 = api.md5_file(tmp_file)
-					if not manual_sub and new_md5 ~= "" and old_md5 == new_md5 then
-						log('订阅:【' .. remark .. '】没有变化，无需更新。')
-					else
-						raw_data = parseClashNode(raw_data)
-						subscribe_info[cfgid] = parse_clash_sub_info(headers)
-						parse_link(raw_data, "2", remark, value)
-						uci_set(cfgid, "md5", new_md5)
+					-- 机场可能对正文加密（响应头 X-Encrypted: 1），解密后再解析。
+					-- 明文必须写回临时文件：下面的 md5_file 用来判断「内容有没有变」，
+					-- 而加密正文每次 IV 随机、密文必变，基于密文算 md5 会让该判断失效，
+					-- 导致每次更新都全量重解析。
+					-- 不用 goto 跳过本轮：OpenWrt 的 lua 包是 5.1，没有 goto 语法。
+					local decrypt_ok = true
+					if vpncheap.isEncrypted(headers) then
+						local plain, err = vpncheap.decrypt(raw_data)
+						if not plain then
+							decrypt_ok = false
+							log('订阅:【' .. remark .. '】正文解密失败，已跳过。[' .. tostring(err) .. ']')
+						else
+							raw_data = api.trim(plain)
+							local wf = io.open(tmp_file, "w")
+							if wf then
+								wf:write(raw_data)
+								wf:close()
+							end
+						end
+					end
+					if decrypt_ok then
+						local old_md5 = value.md5 or ""
+						local new_md5 = api.md5_file(tmp_file)
+						if not manual_sub and new_md5 ~= "" and old_md5 == new_md5 then
+							log('订阅:【' .. remark .. '】没有变化，无需更新。')
+						else
+							raw_data = parseClashNode(raw_data)
+							subscribe_info[cfgid] = parse_clash_sub_info(headers)
+							parse_link(raw_data, "2", remark, value)
+							uci_set(cfgid, "md5", new_md5)
+						end
 					end
 				else
 					fail_list[#fail_list + 1] = value
