@@ -73,7 +73,10 @@ do
 				end
 				return res
 			end
-			bnot = function(a) return norm(4294967295 - norm(a)) end
+			-- bnot 与原生语义保持一致：返回有符号补码（~0 == -1），
+			-- 而不是无符号的 4294967295。band/bor/bxor 内部会 norm，
+			-- 但保持同语义能避免以后误用。
+			bnot = function(a) return -1 - norm(a) end
 			rshift = function(a, n) return math.floor(norm(a) / (2 ^ n)) end
 			lshift = function(a, n) return norm(norm(a) * (2 ^ n)) end
 		end

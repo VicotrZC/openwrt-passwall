@@ -2313,36 +2313,44 @@ local execute = function()
 					f:close()
 					local raw_data = api.trim(stdout)
 					-- 机场可能对正文加密（响应头 X-Encrypted: 1），解密后再解析。
-					-- 明文必须写回临时文件：下面的 md5_file 用来判断「内容有没有变」，
-					-- 而加密正文每次 IV 随机、密文必变，基于密文算 md5 会让该判断失效，
-					-- 导致每次更新都全量重解析。
-					-- 不用 goto 跳过本轮：OpenWrt 的 lua 包是 5.1，没有 goto 语法。
-					local decrypt_ok = true
+					--
+					-- 两个要点：
+					-- 1) 明文要写回临时文件。下面的 md5_file 用于判断「内容有没有变」，
+					--    而加密正文每次 IV 随机、密文必变，基于密文算 md5 会让该判断
+					--    失效，导致每次更新都全量重解析。
+					-- 2) 解密失败时退回原始数据继续解析，而不是跳过整个订阅。
+					--    X-Encrypted 这个标记并非本实现独有，别的机场可能用各自的
+					--    密钥或算法；那种情况下我们必然解不开，若在此跳过，
+					--    会把一个本来可用的订阅弄坏。
+					-- 3) 不用 goto：OpenWrt 的 lua 包是 5.1，没有 goto 语法。
 					if vpncheap.isEncrypted(headers) then
 						local plain, err = vpncheap.decrypt(raw_data)
-						if not plain then
-							decrypt_ok = false
-							log('订阅:【' .. remark .. '】正文解密失败，已跳过。[' .. tostring(err) .. ']')
-						else
+						if plain then
 							raw_data = api.trim(plain)
 							local wf = io.open(tmp_file, "w")
 							if wf then
 								wf:write(raw_data)
 								wf:close()
+							else
+								-- 写回失败：内存里的 raw_data 已是明文，解析不受影响，
+								-- 但临时文件里仍是密文。置空 old_md5 使本次必然重解析，
+								-- 避免把密文的 md5 存进配置（那会让下次误判为「无变化」）。
+								log('订阅:【' .. remark .. '】明文回写失败，本次将强制更新。')
+								value.md5 = ""
 							end
+						else
+							log('订阅:【' .. remark .. '】正文解密失败，按未加密内容继续解析。[' .. tostring(err) .. ']')
 						end
 					end
-					if decrypt_ok then
-						local old_md5 = value.md5 or ""
-						local new_md5 = api.md5_file(tmp_file)
-						if not manual_sub and new_md5 ~= "" and old_md5 == new_md5 then
-							log('订阅:【' .. remark .. '】没有变化，无需更新。')
-						else
-							raw_data = parseClashNode(raw_data)
-							subscribe_info[cfgid] = parse_clash_sub_info(headers)
-							parse_link(raw_data, "2", remark, value)
-							uci_set(cfgid, "md5", new_md5)
-						end
+					local old_md5 = value.md5 or ""
+					local new_md5 = api.md5_file(tmp_file)
+					if not manual_sub and new_md5 ~= "" and old_md5 == new_md5 then
+						log('订阅:【' .. remark .. '】没有变化，无需更新。')
+					else
+						raw_data = parseClashNode(raw_data)
+						subscribe_info[cfgid] = parse_clash_sub_info(headers)
+						parse_link(raw_data, "2", remark, value)
+						uci_set(cfgid, "md5", new_md5)
 					end
 				else
 					fail_list[#fail_list + 1] = value
