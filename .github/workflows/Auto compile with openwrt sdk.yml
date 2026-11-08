@@ -182,7 +182,13 @@ jobs:
   job_trigger_packages:
     name: Trigger packages cache workflow
     needs: [job_check, job_build_passwall]
-    if: needs.job_check.outputs.has_update == 'true' && needs.job_build_passwall.result == 'success'
+    # 这个 job 用 PAT 往另一个仓库派发 workflow。fork 里没有该 secret，
+    # 也不可能拿到目标仓库的 Actions:write 权限，所以只让上游仓库跑，
+    # 否则每次构建都会在最后红一个与出包无关的 job。
+    if: >-
+      needs.job_check.outputs.has_update == 'true' &&
+      needs.job_build_passwall.result == 'success' &&
+      github.repository_owner == 'Openwrt-Passwall'
     runs-on: ubuntu-26.04
     steps:
       - name: Trigger Auto Cache Software Release JSONs
