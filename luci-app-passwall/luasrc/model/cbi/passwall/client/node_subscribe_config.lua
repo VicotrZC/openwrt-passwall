@@ -279,6 +279,11 @@ o:value("Shadowrocket/9999 CFNetwork/3896.100.1.2.1 Darwin/27.0.0 iPhone19,7", "
 o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
 o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 
+o = s:option(TextValue, "custom_headers", translate("Custom Request Headers"),
+	translate("One header per line, in the form Name: Value. Only used when fetching this subscription."))
+o.rows = 3
+o.placeholder = "X-Client-Encrypt: v1"
+
 o = s:option(ListValue, "chain_proxy", translate("Chain Proxy"))
 o:value("", translate("Close(Not use)"))
 o:value("1", translate("Preproxy Node"))

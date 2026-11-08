@@ -1,0 +1,39 @@
+name: "Lua tests"
+
+on:
+  push:
+    paths:
+      - "luci-app-passwall/**"
+      - "test/lua/**"
+      - ".github/workflows/lua-test.yml"
+  pull_request:
+    paths:
+      - "luci-app-passwall/**"
+      - "test/lua/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lua:
+    name: singbox subscription
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --quiet lupa
+          openssl version
+          lua_ver=$(python -c "import lupa;print(lupa.LuaRuntime().eval('_VERSION'))")
+          echo "embedded $lua_ver"
+
+      - name: Run tests
+        run: python test/lua/run_lua_tests.py

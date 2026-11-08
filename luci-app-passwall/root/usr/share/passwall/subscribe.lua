@@ -11,6 +11,7 @@ local c_config = api.c_config
 local datatypes = api.datatypes
 
 loadfile("/usr/share/passwall/clash_subconverter.lua")()
+loadfile("/usr/share/passwall/singbox_sub.lua")()
 
 local split = api.split
 local base64Decode = api.base64Decode
@@ -21,6 +22,23 @@ local uci, uci_get, uci_set, uci_del, uci_foreach, uci_save = api.uci, api.uci_g
 
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
+-- 订阅的自定义请求头，每行一条 "Name: Value"
+local function parse_custom_headers(text)
+	local list = {}
+	if type(text) ~= "string" or text == "" then return list end
+	for line in text:gmatch("[^\r\n]+") do
+		local name, val = line:match("^%s*([^:%s]+)%s*:%s*(.-)%s*$")
+		if name and val then
+			list[#list + 1] = name .. ": " .. val
+		end
+	end
+	return list
+end
+
+local function sh_quote(s)
+	return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
 local tinsert = table.insert
 local ssub, slen, schar, sbyte, sformat, sgsub = string.sub, string.len, string.char, string.byte, string.format, string.gsub
 
@@ -1678,7 +1696,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 	return result
 end
 
-local function curl(url, file, ua, mode)
+local function curl(url, file, ua, mode, extra_headers)
 	if not url or url == "" then return 22, 404 end
 	local curl_args = {
 		"-fskL",
@@ -1693,6 +1711,13 @@ local function curl(url, file, ua, mode)
 	ua = (ua and ua ~= "") and ua or "passwall"
 	ua = (ua == "passwall") and ("passwall/" .. api.get_version():match("^([^-]+)")) or ua
 	curl_args[#curl_args + 1] = '--user-agent "' .. ua .. '"'
+
+	-- 有些机场（如 vpncheap）要求特定请求头才肯返回订阅
+	if type(extra_headers) == "table" then
+		for _, h in ipairs(extra_headers) do
+			curl_args[#curl_args + 1] = "-H " .. sh_quote(h)
+		end
+	end
 
 	local cookie_file = "/tmp/cookie_" .. api.gen_random_char(5)
 	curl_args[#curl_args + 1] = '-c "' .. cookie_file .. '" -b "' .. cookie_file .. '"'
@@ -2166,7 +2191,8 @@ local execute = function()
 				log('正在订阅:【' .. remark .. '】' .. url .. ' [' .. result .. ']')
 				tmp_file = "/tmp/" .. cfgid
 				local return_code
-				return_code, value.http_code, headers = curl(url, tmp_file, ua, access_mode)
+				local extra_headers = parse_custom_headers(value.custom_headers)
+				return_code, value.http_code, headers = curl(url, tmp_file, ua, access_mode, extra_headers)
 				if return_code ~= 0 then
 					fail_list[#fail_list + 1] = value
 					api.remove(tmp_file)
@@ -2178,6 +2204,22 @@ local execute = function()
 					local stdout = f:read("*all")
 					f:close()
 					local raw_data = api.trim(stdout)
+					-- 加密的 sing-box 订阅（如 vpncheap）：先解密再转分享链接。
+					-- PassWall 原本只认 Clash YAML 和分享链接，这类订阅会解析出 0 个节点。
+					local link_mode = "2"
+					if singboxSubIsEncrypted(headers) then
+						local plain, derr = singboxSubDecrypt(raw_data, "/tmp")
+						if plain then
+							local links, cerr = singboxSubToLinks(plain, jsonParse)
+							if links then
+								raw_data, link_mode = links, "1"
+							else
+								log('订阅:【' .. remark .. '】解密成功但转换失败：' .. tostring(cerr))
+							end
+						else
+							log('订阅:【' .. remark .. '】解密失败：' .. tostring(derr))
+						end
+					end
 					local auto_dns = value.domain_resolver == nil or value.domain_resolver == ""
 					local resolver
 					raw_data, resolver = parseClashNode(raw_data, remark, auto_dns)
@@ -2193,7 +2235,7 @@ local execute = function()
 					end
 					-- 开启日志事务缓冲：前置解析期间日志暂存，未变更时静默丢弃，避免定时任务刷屏
 					log_buffer = {}
-					local parsed_nodes = parse_link(raw_data, "2", remark, value)
+					local parsed_nodes = parse_link(raw_data, link_mode, remark, value)
 					local old_md5 = value.md5 or ""
 					local md5_content = jsonStringify(parsed_nodes)
 					if value.domain_resolver and value.domain_resolver ~= "" and value.domain_resolver ~= "disable" then

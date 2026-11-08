@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-passwall
 PKG_VERSION:=26.11.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_PO_VERSION:=$(PKG_VERSION)
 
 PKG_CONFIG_DEPENDS:= \
@@ -35,7 +35,7 @@ LUCI_TITLE:=LuCI support for PassWall
 LUCI_PKGARCH:=all
 LUCI_DEPENDS:=+coreutils +coreutils-base64 +coreutils-nohup +coreutils-timeout +curl \
 	+chinadns-ng +dns2socks +dnsmasq-full +ip-full \
-	+libuci-lua +lua +luci-compat +luci-lib-jsonc \
+	+libuci-lua +lua +luci-compat +luci-lib-jsonc +openssl-util \
 	+microsocks +resolveip +tcping +lyaml
 
 define Package/$(PKG_NAME)/config
