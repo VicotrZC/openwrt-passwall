@@ -2063,3 +2063,10 @@ msgstr "显示全部行"
 
 msgid "The filter only hides rows on this page and changes nothing on the router. Select all skips hidden rows."
 msgstr "筛选只在本页隐藏行，不会改动路由器上的设置。全选会跳过隐藏行。"
+
+
+msgid "Custom Request Headers"
+msgstr "自定义请求头"
+
+msgid "One header per line, in the form Name: Value. Only used when fetching this subscription."
+msgstr "每行一条，格式为「名称: 值」。仅拉取此订阅时使用。"
