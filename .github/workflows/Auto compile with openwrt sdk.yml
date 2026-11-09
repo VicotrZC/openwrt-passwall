@@ -148,12 +148,16 @@ jobs:
           echo "CONFIG_AUTOREMOVE=n" >> .config
           echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-passwall=m" >> .config
+          # apk 签名：配合 secret PRIVATE_KEY，出包时用私钥签名，
+          # 路由器导入对应公钥后可直接 apk add，无需 --allow-untrusted
+          echo "CONFIG_SIGN_EACH_PACKAGE=y" >> .config
 
       - name: Compile With OpenWrt SDK
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.container_tag }}
           PACKAGES: luci-app-passwall
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           # V: s
 
       - name: Process and Rename Artifacts
@@ -168,6 +172,11 @@ jobs:
           cd ${{ github.workspace }}/upload
           
           for i in $(ls); do mv $i ${{ matrix.ver }}_$i; done
+
+          # 只有 apk 平台需要，把公钥一起发出去
+          if [ "${{ matrix.ver }}" = "25.12+" ]; then
+            cp ../apk-signing-public-key.pem ./passwall-apk-signing-public-key.pem
+          fi
           
           echo "status=success" >> $GITHUB_OUTPUT
       - name: Upload to release
