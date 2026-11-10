@@ -2206,13 +2206,12 @@ local execute = function()
 					local raw_data = api.trim(stdout)
 					-- 加密的 sing-box 订阅（如 vpncheap）：先解密再转分享链接。
 					-- PassWall 原本只认 Clash YAML 和分享链接，这类订阅会解析出 0 个节点。
-					local link_mode = "2"
 					if singboxSubIsEncrypted(headers) then
 						local plain, derr = singboxSubDecrypt(raw_data, "/tmp")
 						if plain then
 							local links, cerr = singboxSubToLinks(plain, jsonParse)
 							if links then
-								raw_data, link_mode = links, "1"
+								raw_data = singboxSubEncode(links)
 							else
 								log('订阅:【' .. remark .. '】解密成功但转换失败：' .. tostring(cerr))
 							end
@@ -2235,7 +2234,7 @@ local execute = function()
 					end
 					-- 开启日志事务缓冲：前置解析期间日志暂存，未变更时静默丢弃，避免定时任务刷屏
 					log_buffer = {}
-					local parsed_nodes = parse_link(raw_data, link_mode, remark, value)
+					local parsed_nodes = parse_link(raw_data, "2", remark, value)
 					local old_md5 = value.md5 or ""
 					local md5_content = jsonStringify(parsed_nodes)
 					if value.domain_resolver and value.domain_resolver ~= "" and value.domain_resolver ~= "disable" then
