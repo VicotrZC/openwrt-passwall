@@ -390,6 +390,25 @@ function singboxSubToLinks(text, json_parse)
 	return table.concat(links, "\n") .. "\n", nil
 end
 
+--[[
+	把分享链接文本编码成 PassWall 能吃的 base64。
+
+	为什么不直接传纯文本配 add_mode="1"：
+	parse_link 在 add_mode ~= "2" 时会把节点塞进 nodeResult 且**不带 md5 字段**，
+	后面 subscribe.lua:2282 的 uci_set(..., result.md5) 就会因为 #nil 崩溃；
+	同时还会跳过订阅的关键词过滤和逐节点用量统计。
+
+	所以仍然走 add_mode="2"，只是把内容做成它期望的 base64。
+	尾部等号必须去掉：api.base64Decode 的字符集校验是 ^[A-Za-z0-9+/]*$，
+	带 "=" 会被原样返回（这正是本次节点数为 0 的根因）。
+--]]
+function singboxSubEncode(text)
+	if type(text) ~= "string" or text == "" then return nil end
+	local enc = base64Encode(text)
+	if not enc then return nil end
+	return (enc:gsub("=+$", ""))
+end
+
 -- 判断响应头里是否声明了加密
 function singboxSubIsEncrypted(header_str)
 	if type(header_str) ~= "string" then return false end
