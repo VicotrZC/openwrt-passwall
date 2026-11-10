@@ -312,8 +312,10 @@ function singboxSubDecrypt(blob, workdir)
 	f:write(ct)
 	f:close()
 
-	local has_openssl = os.execute("command -v openssl >/dev/null 2>&1") == 0
-	if not has_openssl then
+	-- os.execute 的返回值跨版本不一致：Lua 5.1 返回状态码 0，
+	-- Lua 5.2+ 返回 true, "exit", 0。两种都要认。
+	local probe = os.execute("command -v openssl >/dev/null 2>&1")
+	if not (probe == 0 or probe == true) then
 		os.remove(in_path)
 		return nil, "系统里没有 openssl 命令，请安装 openssl-util"
 	end
