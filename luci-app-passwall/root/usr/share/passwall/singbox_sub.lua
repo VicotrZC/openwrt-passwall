@@ -16,8 +16,17 @@
 --]]
 
 local api = require("luci.passwall.api")
-local base64Decode = api.base64Decode
 local base64Encode = api.base64Encode
+
+-- 注意：这里不能用 api.base64Decode。
+-- 它做完解码会重新编码并去掉尾部等号，再和原输入比较：
+--     local reencoded = nixio.bin.b64encode(result):gsub("=+$", "")
+--     if reencoded ~= encoded then return text end
+-- 服务端返回的 base64 是带 "=" 的，于是这个比较永远不成立，
+-- 函数会把 base64 文本原样返回而不报错。调用方拿到一堆 ASCII 当二进制，
+-- openssl 就会报「不是块长度整数倍」，最终节点数为 0。
+-- 所以自己用 nixio 解码，不经过那个规范校验。
+local nixio_ok, nixio = pcall(require, "nixio")
 
 -- AES-256 密钥 = sha256("7f96f0cd9b99abedaa93f9292adcd9dbf1968e6ebba39667e8e9846203c75136")
 local AES_KEY_HEX = "3d7ad5e98d00ef072810c4f7e3b140a7d1cdf3ad512f5a87ea88b91ea2c64bac"
@@ -34,6 +43,44 @@ local function hexlify(s)
 	return (s:gsub(".", function(c)
 		return string.format("%02x", string.byte(c))
 	end))
+end
+
+-- base64 / base64url -> 二进制。容忍尾部等号缺失、URL 安全字符、换行和空格。
+local function b64_decode(raw)
+	if type(raw) ~= "string" or raw == "" then return nil, "内容为空" end
+	local s = raw:gsub("%s+", ""):gsub("%z", "")
+	if s == "" then return nil, "内容为空" end
+	s = s:gsub("%-", "+"):gsub("_", "/")
+	local mod4 = #s % 4
+	if mod4 == 1 then
+		return nil, "base64 长度不合法（%4==1）"
+	end
+	if mod4 > 0 then
+		s = s .. string.rep("=", 4 - mod4)
+	end
+	if nixio_ok and nixio and nixio.bin and nixio.bin.b64decode then
+		local ok, out = pcall(nixio.bin.b64decode, s)
+		if ok and out and out ~= "" then
+			return out, nil
+		end
+		return nil, "nixio 解码失败"
+	end
+	-- 兜底：用 coreutils base64（Makefile 已依赖）
+	local tmp_in = "/tmp/pw_singbox_b64.txt"
+	local tmp_out = "/tmp/pw_singbox_b64.bin"
+	local f = io.open(tmp_in, "wb")
+	if not f then return nil, "无法写入 " .. tmp_in end
+	f:write(s)
+	f:close()
+	os.execute("base64 -d " .. tmp_in .. " > " .. tmp_out .. " 2>/dev/null")
+	local g = io.open(tmp_out, "rb")
+	if not g then return nil, "base64 -d 失败" end
+	local out = g:read("*a")
+	g:close()
+	os.remove(tmp_in)
+	os.remove(tmp_out)
+	if not out or out == "" then return nil, "base64 -d 产出为空" end
+	return out, nil
 end
 
 --[[
@@ -235,37 +282,60 @@ local ENCODERS = {
 
 --[[
 	解密：payload = base64url(IV[16] || AES-256-CBC(PKCS7) )
-	返回 明文, nil 或 nil, 错误信息
+	返回 明文, nil 或 nil, 错误信息（错误信息要能看出卡在哪一步）
 --]]
 function singboxSubDecrypt(blob, workdir)
 	if type(blob) ~= "string" or blob == "" then
 		return nil, "响应为空"
 	end
-	local raw = base64Decode(blob)
-	if type(raw) ~= "string" or #raw <= 16 then
-		return nil, "密文长度异常"
+
+	local raw, derr = b64_decode(blob)
+	if not raw then
+		return nil, "base64 解码失败：" .. tostring(derr)
 	end
+	if #raw <= 16 then
+		return nil, string.format("解码后只有 %d 字节，不足以构成 IV+密文", #raw)
+	end
+
 	workdir = workdir or "/tmp"
 	local iv = raw:sub(1, 16)
 	local ct = raw:sub(17)
+	if #ct % 16 ~= 0 then
+		return nil, string.format("密文 %d 字节，不是 16 的整数倍", #ct)
+	end
 
 	local in_path = workdir .. "/pw_singbox_ct.bin"
 	local out_path = workdir .. "/pw_singbox_pt.json"
+	local err_path = workdir .. "/pw_singbox_err.txt"
 	local f = io.open(in_path, "wb")
 	if not f then return nil, "无法写入 " .. in_path end
 	f:write(ct)
 	f:close()
 
+	local has_openssl = os.execute("command -v openssl >/dev/null 2>&1") == 0
+	if not has_openssl then
+		os.remove(in_path)
+		return nil, "系统里没有 openssl 命令，请安装 openssl-util"
+	end
+
 	local cmd = string.format(
-		"openssl enc -d -aes-256-cbc -nosalt -K %s -iv %s -in %s -out %s 2>/dev/null",
+		"openssl enc -d -aes-256-cbc -nosalt -K %s -iv %s -in %s -out %s 2>" .. err_path,
 		AES_KEY_HEX, hexlify(iv), in_path, out_path)
 	local rc = os.execute(cmd)
-	-- Lua 5.1 返回数字状态码，5.2+ 返回 true/nil
 	if not (rc == 0 or rc == true) then
+		local detail = ""
+		local ef = io.open(err_path, "rb")
+		if ef then
+			detail = (ef:read("*a") or ""):gsub("%s+$", "")
+			ef:close()
+		end
 		os.remove(in_path)
 		os.remove(out_path)
-		return nil, "openssl 解密失败（需要 openssl-util）"
+		os.remove(err_path)
+		return nil, string.format("openssl 解密失败(exit=%s)：%s", tostring(rc),
+			detail ~= "" and detail or "无输出")
 	end
+	os.remove(err_path)
 
 	local g = io.open(out_path, "rb")
 	if not g then return nil, "解密结果读不到" end
