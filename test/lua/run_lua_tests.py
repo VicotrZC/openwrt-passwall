@@ -176,7 +176,22 @@ if links and links != expect_links:
             break
 
 # ------------------------------------------------------------ 5. 健壮性
-print("\n[4] 健壮性")
+print("\n[4] base64 padding 兼容")
+# 服务端有时返回带尾部 "=" 的 base64url。PassWall 自带的 base64Decode 会把这种
+# 输入原样返回（去等号后重编码再比较，永远不等），必须自己解码。
+_raw = base64.b64decode(re.sub(r"\s", "", blob).replace("-", "+").replace("_", "/")
+                        + "=" * ((4 - len(re.sub(r"\s", "", blob)) % 4) % 4))
+for _label, _payload in (
+    ("带等号", base64.b64encode(_raw).decode()),
+    ("无等号", base64.b64encode(_raw).decode().rstrip("=")),
+    ("url-safe", base64.b64encode(_raw).decode().replace("+", "-").replace("/", "_")),
+    ("带换行", base64.b64encode(_raw).decode()[:80] + "\n"
+     + base64.b64encode(_raw).decode()[80:]),
+):
+    _p, _e = call2(lua.globals().singboxSubDecrypt, _payload, tempfile.gettempdir())
+    check(tostr(_p) == expect_plain, "解码 %s" % _label, "" if tostr(_p) else str(_e))
+
+print("\n[5] 健壮性")
 is_enc = lua.globals().singboxSubIsEncrypted
 cases = [
     ("X-Encrypted: 1\r\n", True),
